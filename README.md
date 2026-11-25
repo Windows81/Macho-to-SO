@@ -29,3 +29,5 @@ Verification:
 
 `tests_fixture.macho` is a small Mach-O image taken from the Roblox Studio
 bundle and bundled so the self-test runs without network access.
+
+Licence: GNU General Public License v3 (see `LICENSE`).
