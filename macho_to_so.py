@@ -37,9 +37,10 @@ DT_SONAME = 14
 R_AARCH64_GLOB_DAT = 1025
 R_AARCH64_RELATIVE = 1027
 VM_R, VM_W, VM_X = 1, 2, 4
+PF_X, PF_W, PF_R = 1, 2, 4
 
 # mov w0,#6 ; movk w0,#1,lsl#16 ; ret  ->  JNI_VERSION_1_6
-JNI_TRAMPOLINE = struct.pack("<III", 0x528000C0, 0x72A20020, 0xD65F03C0)
+JNI_TRAMPOLINE = struct.pack("<III", 0x528000C0, 0x72A00020, 0xD65F03C0)
 
 
 def align(value, alignment):
@@ -103,16 +104,16 @@ def _head_hash(path):
         return hashlib.sha1(fh.read(4096)).hexdigest()[:10]
 
 
-def read_pointer(src_path, offset):
+def read_pointer(fh, offset):
     if offset is None or offset < 0:
         return 0
-    with open(src_path, "rb") as fh:
-        fh.seek(offset)
-        data = fh.read(8)
+    fh.seek(offset)
+    data = fh.read(8)
     return struct.unpack("<Q", data)[0] if len(data) == 8 else 0
 
 
 def convert(src, dst, bridge="libroblox_jni_bridge.so"):
+    src_fh = open(src, "rb")
     binary = lief.MachO.parse(src)
     if binary is None or len(binary) == 0:
         raise RuntimeError("not a Mach-O file: %s" % src)
@@ -184,7 +185,7 @@ def convert(src, dst, bridge="libroblox_jni_bridge.so"):
         if sym_name and sym_name in index:
             relocations.append((addr, index[sym_name], R_AARCH64_GLOB_DAT, 0))
         else:
-            addend = read_pointer(src, vaddr_to_offset(addr))
+            addend = read_pointer(src_fh, vaddr_to_offset(addr))
             relocations.append((addr, 0, R_AARCH64_RELATIVE, addend))
 
     # ---- needed libraries --------------------------------------------
@@ -212,10 +213,10 @@ def convert(src, dst, bridge="libroblox_jni_bridge.so"):
                                    info, 0, shndx, sym["value"], 0)
 
     hash_data = build_hash([s["name"] for s in symbols])
-    rela_data = b""
+    rela_data = bytearray()
     for addr, sym_idx, rtype, addend in relocations:
-        rela_data += struct.pack("<QQQ", addr, (sym_idx << 32) | rtype,
-                                 addend)
+        rela_data.extend(struct.pack("<QQQ", addr, (sym_idx << 32) | rtype,
+                                     addend))
 
     # ---- layout of appended metadata ---------------------------------
     meta_off = align(max_file_end, PAGE)
@@ -225,7 +226,7 @@ def convert(src, dst, bridge="libroblox_jni_bridge.so"):
     off_hash = off_dynsym + len(dynsym_data)
     off_rela = off_hash + len(hash_data)
     n_dyn = 10 + len(needed)         # 8 base tags + SONAME + NULL + NEEDED
-    off_dynamic = off_rela + len(rela_data)
+    off_dynamic = align(off_rela + len(rela_data), 16)
     off_shstr = off_dynamic + 16 * n_dyn
     shstr = StringTable()
     for n in (".dynstr", ".dynsym", ".hash", ".rela.dyn", ".dynamic",
@@ -263,23 +264,23 @@ def convert(src, dst, bridge="libroblox_jni_bridge.so"):
     phdr_count = len(segments) + 4
     ph_size = 56 * phdr_count
     first_vaddr = min(s.virtual_address for s in segments)
-    phdrs = pheader(PT_PHDR, VM_R, 64, first_vaddr + 64,
+    phdrs = pheader(PT_PHDR, PF_R, 64, first_vaddr + 64,
                     ph_size, ph_size, 8)
     for s in segments:
         flags = 0
         if s.init_protection & VM_R:
-            flags |= VM_R
+            flags |= PF_R
         if s.init_protection & VM_W:
-            flags |= VM_W
+            flags |= PF_W
         if s.init_protection & VM_X:
-            flags |= VM_X
+            flags |= PF_X
         phdrs += pheader(PT_LOAD, flags, s.file_offset, s.virtual_address,
                          s.file_size, max(s.file_size, s.virtual_size), PAGE)
-    phdrs += pheader(PT_LOAD, VM_R, meta_off, meta_va,
+    phdrs += pheader(PT_LOAD, PF_R, meta_off, meta_va,
                      off_shdr_end - meta_off, off_shdr_end - meta_off, PAGE)
-    phdrs += pheader(PT_LOAD, VM_R | VM_X, tramp_off, tramp_va,
+    phdrs += pheader(PT_LOAD, PF_R | PF_X, tramp_off, tramp_va,
                      len(JNI_TRAMPOLINE), len(JNI_TRAMPOLINE), PAGE)
-    phdrs += pheader(PT_DYNAMIC, VM_R, off_dynamic, va(off_dynamic),
+    phdrs += pheader(PT_DYNAMIC, PF_R, off_dynamic, va(off_dynamic),
                      len(dynamic_data), len(dynamic_data), 8)
 
     # ---- section headers ---------------------------------------------
@@ -332,6 +333,7 @@ def convert(src, dst, bridge="libroblox_jni_bridge.so"):
         out.write(dynsym_data)
         out.write(hash_data)
         out.write(rela_data)
+        out.write(b"\0" * (off_dynamic - (off_rela + len(rela_data))))
         out.write(dynamic_data)
         out.write(shstr.data)
         out.write(b"\0" * (off_shdr - (off_shstr + len(shstr.data))))
@@ -340,6 +342,7 @@ def convert(src, dst, bridge="libroblox_jni_bridge.so"):
         out.write(b"\0" * (tramp_off - off_shdr_end))
         out.write(JNI_TRAMPOLINE)
 
+    src_fh.close()
     return {
         "source": src, "output": dst,
         "segments": len(segments),
