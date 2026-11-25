@@ -165,6 +165,9 @@ def convert(src, dst, bridge="libroblox_jni_bridge.so"):
         if name not in index:
             add_symbol(name)
     jni_index = add_symbol("JNI_OnLoad", 0, True, True)
+    if getattr(m, "main_command", None) is not None:
+        base = min(x.virtual_address for x in segments)
+        add_symbol("studio_entry", base + m.main_command.entrypoint, True, True)
 
     strtab = StringTable()
     for sym in symbols:
