@@ -214,7 +214,7 @@ def convert(src, dst, bridge="libroblox_jni_bridge.so"):
     hash_data = build_hash([s["name"] for s in symbols])
     rela_data = b""
     for addr, sym_idx, rtype, addend in relocations:
-        rela_data += struct.pack("<QQq", addr, (sym_idx << 32) | rtype,
+        rela_data += struct.pack("<QQQ", addr, (sym_idx << 32) | rtype,
                                  addend)
 
     # ---- layout of appended metadata ---------------------------------
