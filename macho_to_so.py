@@ -34,6 +34,8 @@ STT_NOTYPE, STT_FUNC = 0, 2
 DT_NULL, DT_NEEDED, DT_HASH, DT_STRTAB, DT_SYMTAB = 0, 1, 4, 5, 6
 DT_RELA, DT_RELASZ, DT_RELAENT, DT_STRSZ, DT_SYMENT = 7, 8, 9, 10, 11
 DT_SONAME = 14
+DT_INIT_ARRAY, DT_INIT_ARRAYSZ = 25, 27
+SHT_INIT_ARRAY = 14
 R_AARCH64_GLOB_DAT = 1025
 R_AARCH64_RELATIVE = 1027
 VM_R, VM_W, VM_X = 1, 2, 4
@@ -41,6 +43,10 @@ PF_X, PF_W, PF_R = 1, 2, 4
 
 # mov w0,#6 ; movk w0,#1,lsl#16 ; ret  ->  JNI_VERSION_1_6
 JNI_TRAMPOLINE = struct.pack("<III", 0x528000C0, 0x72A00020, 0xD65F03C0)
+STUDIO_JNI_NAME = "Java_io_github_robloxport_MainActivity_startStudio"
+STUDIO_SHIM = (struct.pack("<III", 0xAA0203E0, 0x10000061, 0x14000000)
+              + b"\0" * 16
+              + b"RobloxStudio\0".ljust(16, b"\0"))
 
 
 def align(value, alignment):
@@ -112,7 +118,8 @@ def read_pointer(fh, offset):
     return struct.unpack("<Q", data)[0] if len(data) == 8 else 0
 
 
-def convert(src, dst, bridge="libroblox_jni_bridge.so"):
+def convert(src, dst, bridge="libroblox_jni_bridge.so",
+            include_init=True):
     src_fh = open(src, "rb")
     binary = lief.MachO.parse(src)
     if binary is None or len(binary) == 0:
@@ -123,6 +130,10 @@ def convert(src, dst, bridge="libroblox_jni_bridge.so"):
                 if s.name != "__PAGEZERO" and s.file_size > 0]
     if not segments:
         raise RuntimeError("no loadable segments in %s" % src)
+    init_section = next((sec for sec in m.sections
+                         if sec.name == "__mod_init_func"), None) \
+        if include_init else None
+    init_data = bytes(init_section.content) if init_section else b""
     max_file_end = max(s.file_offset + s.file_size for s in segments)
     max_vaddr_end = max(s.virtual_address + s.virtual_size for s in segments)
 
@@ -165,9 +176,11 @@ def convert(src, dst, bridge="libroblox_jni_bridge.so"):
         if name not in index:
             add_symbol(name)
     jni_index = add_symbol("JNI_OnLoad", 0, True, True)
+    studio_jni_index = -1
     if getattr(m, "main_command", None) is not None:
         base = min(x.virtual_address for x in segments)
         add_symbol("studio_entry", base + m.main_command.entrypoint, True, True)
+        studio_jni_index = add_symbol(STUDIO_JNI_NAME, 0, True, True)
 
     strtab = StringTable()
     for sym in symbols:
@@ -228,24 +241,66 @@ def convert(src, dst, bridge="libroblox_jni_bridge.so"):
     off_dynsym = off_strtab + len(dynstr.data)
     off_hash = off_dynsym + len(dynsym_data)
     off_rela = off_hash + len(hash_data)
-    n_dyn = 10 + len(needed)         # 8 base tags + SONAME + NULL + NEEDED
-    off_dynamic = align(off_rela + len(rela_data), 16)
+    n_dyn = 12 + len(needed)         # + DT_INIT_ARRAY and DT_INIT_ARRAYSZ
+    init_count = len(init_data) // 8
+    predicted_rela_size = 24 * (len(relocations) + init_count
+                               + (1 if studio_jni_index >= 0 else 0))
+    off_dynamic = align(off_rela + predicted_rela_size, 16)
     off_shstr = off_dynamic + 16 * n_dyn
     shstr = StringTable()
     for n in (".dynstr", ".dynsym", ".hash", ".rela.dyn", ".dynamic",
-              ".shstrtab", ".text", ".jni"):
+              ".shstrtab", ".text", ".jni", ".init_array"):
         shstr.add(n)
-    off_shdr = align(off_shstr + len(shstr.data), 8)
-    n_sections = 9
+    off_init_array = align(off_shstr + len(shstr.data), 8)
+    off_shdr = align(off_init_array + len(init_data), 8)
+    n_sections = 10 if init_data else 9
     off_shdr_end = off_shdr + 64 * n_sections
 
     tramp_off = align(off_shdr_end, PAGE)
     tramp_va = align(meta_va + (off_shdr_end - meta_off), PAGE)
     file_end = tramp_off + len(JNI_TRAMPOLINE)
     struct.pack_into("<Q", dynsym_data, jni_index * 24 + 8, tramp_va)
+    studio_shim_data = bytearray(STUDIO_SHIM)
+    studio_shim_offset = 0x2000
+    studio_shim_va = 0
+    if studio_jni_index >= 0:
+        image_base = min(x.virtual_address for x in segments)
+        studio_address = image_base + m.main_command.entrypoint
+        studio_shim_va = image_base + studio_shim_offset
+        struct.pack_into("<Q", dynsym_data, studio_jni_index * 24 + 8,
+                         studio_shim_va)
+        branch_offset = (studio_address - (studio_shim_va + 8)) >> 2
+        struct.pack_into("<I", studio_shim_data, 8,
+                         0x14000000 | (branch_offset & 0x03FFFFFF))
+        struct.pack_into("<Q", studio_shim_data, 12,
+                         image_base + studio_shim_offset + 0x20)
+        struct.pack_into("<Q", studio_shim_data, 20, 0)
+    jni_area_size = len(JNI_TRAMPOLINE)
 
     def va(offset):
         return meta_va + (offset - meta_off)
+
+    if init_data:
+        init_va = va(off_init_array)
+        for offset_in_array in range(0, len(init_data), 8):
+            initializer = struct.unpack_from("<Q", init_data,
+                                             offset_in_array)[0]
+            relocations.append((init_va + offset_in_array, 0,
+                                R_AARCH64_RELATIVE, initializer))
+        rela_data = bytearray()
+        for addr, sym_idx, rtype, addend in relocations:
+            rela_data.extend(struct.pack("<QQQ", addr,
+                                         (sym_idx << 32) | rtype, addend))
+        assert len(rela_data) == predicted_rela_size
+
+    if studio_jni_index >= 0:
+        relocations.append((studio_shim_va + 12, 0, R_AARCH64_RELATIVE,
+                            image_base + studio_shim_offset + 0x20))
+        rela_data = bytearray()
+        for addr, sym_idx, rtype, addend in relocations:
+            rela_data.extend(struct.pack("<QQQ", addr,
+                                         (sym_idx << 32) | rtype, addend))
+        assert len(rela_data) == predicted_rela_size
 
     dyn_entries = [
         (DT_HASH, va(off_hash)),
@@ -256,6 +311,8 @@ def convert(src, dst, bridge="libroblox_jni_bridge.so"):
         (DT_RELA, va(off_rela)),
         (DT_RELASZ, len(rela_data)),
         (DT_RELAENT, 24),
+        (DT_INIT_ARRAY, va(off_init_array)),
+        (DT_INIT_ARRAYSZ, len(init_data)),
     ]
     dyn_entries += [(DT_NEEDED, o) for o in needed_offsets]
     dyn_entries.append((DT_SONAME, dynstr.offsets["librobloxport.so"]))
@@ -277,12 +334,14 @@ def convert(src, dst, bridge="libroblox_jni_bridge.so"):
             flags |= PF_W
         if s.init_protection & VM_X:
             flags |= PF_X
+        if studio_jni_index >= 0 and s.name == "__TEXT":
+            flags |= PF_W  # writable so the argv relocation can land
         phdrs += pheader(PT_LOAD, flags, s.file_offset, s.virtual_address,
                          s.file_size, max(s.file_size, s.virtual_size), PAGE)
-    phdrs += pheader(PT_LOAD, PF_R, meta_off, meta_va,
+    phdrs += pheader(PT_LOAD, PF_R | PF_W, meta_off, meta_va,
                      off_shdr_end - meta_off, off_shdr_end - meta_off, PAGE)
     phdrs += pheader(PT_LOAD, PF_R | PF_X, tramp_off, tramp_va,
-                     len(JNI_TRAMPOLINE), len(JNI_TRAMPOLINE), PAGE)
+                     jni_area_size, jni_area_size, PAGE)
     phdrs += pheader(PT_DYNAMIC, PF_R, off_dynamic, va(off_dynamic),
                      len(dynamic_data), len(dynamic_data), 8)
 
@@ -307,8 +366,12 @@ def convert(src, dst, bridge="libroblox_jni_bridge.so"):
                 text.virtual_address, text.file_offset, text.file_size,
                 0, 0, 16, 0),
         shender(sh_name(".jni"), SHT_PROGBITS, SHF_ALLOC | SHF_EXEC,
-                tramp_va, tramp_off, len(JNI_TRAMPOLINE), 0, 0, 4, 0),
+                tramp_va, tramp_off, jni_area_size, 0, 0, 4, 0),
     ]
+    if init_data:
+        sections.append(shender(sh_name(".init_array"), SHT_INIT_ARRAY,
+                                SHF_ALLOC | SHF_WRITE, va(off_init_array),
+                                off_init_array, len(init_data), 0, 0, 8, 8))
     assert len(sections) == n_sections
 
     ident = b"\x7fELF\x02\x01\x01\x00" + b"\0" * 8
@@ -331,6 +394,10 @@ def convert(src, dst, bridge="libroblox_jni_bridge.so"):
                 break
             out.write(chunk)
             remaining -= len(chunk)
+        if studio_jni_index >= 0:
+            out.seek(studio_shim_offset)
+            out.write(studio_shim_data)
+            out.seek(0, os.SEEK_END)
         out.write(b"\0" * (meta_off - max_file_end))
         out.write(dynstr.data)
         out.write(dynsym_data)
@@ -339,7 +406,9 @@ def convert(src, dst, bridge="libroblox_jni_bridge.so"):
         out.write(b"\0" * (off_dynamic - (off_rela + len(rela_data))))
         out.write(dynamic_data)
         out.write(shstr.data)
-        out.write(b"\0" * (off_shdr - (off_shstr + len(shstr.data))))
+        out.write(b"\0" * (off_init_array - (off_shstr + len(shstr.data))))
+        out.write(init_data)
+        out.write(b"\0" * (off_shdr - (off_init_array + len(init_data))))
         for sec in sections:
             out.write(sec)
         out.write(b"\0" * (tramp_off - off_shdr_end))
@@ -364,8 +433,10 @@ def main():
     ap.add_argument("input")
     ap.add_argument("output")
     ap.add_argument("--bridge", default="libroblox_jni_bridge.so")
+    ap.add_argument("--skip-init", action="store_true")
     args = ap.parse_args()
-    result = convert(args.input, args.output, args.bridge)
+    result = convert(args.input, args.output, args.bridge,
+                     include_init=not args.skip_init)
     print("%s -> %s  seg=%d sym=%d imp=%d rel=%d  %d->%d bytes" % (
         os.path.basename(args.input), os.path.basename(args.output),
         result["segments"], result["symbols"], result["imports"],
