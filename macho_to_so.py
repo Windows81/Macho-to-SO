@@ -176,8 +176,17 @@ def read_pointer(fh, offset):
     return struct.unpack("<Q", data)[0] if len(data) == 8 else 0
 
 
+# macOS ARM64 tagged pointers encode a small payload in the pointer slot.
+# dyld never slides those values, but a naive converter turns payload 40 into
+# bias+40.  A genuine rebase pointer always points inside the image, so any
+# stored value outside the image range is a tagged value and must be left
+# exactly as it was in the Mach-O (no R_AARCH64_RELATIVE relocation).
+def is_tagged_rebase_value(value, image_base, image_end):
+    return value < image_base or value >= image_end
+
+
 def convert(src, dst, bridge="libroblox_jni_bridge.so",
-            include_init=True, max_init=0):
+            include_init=True, max_init=0, tag_skip=1):
     src_fh = open(src, "rb")
     binary = lief.MachO.parse(src)
     if binary is None or len(binary) == 0:
@@ -188,6 +197,8 @@ def convert(src, dst, bridge="libroblox_jni_bridge.so",
                 if s.name != "__PAGEZERO" and s.file_size > 0]
     if not segments:
         raise RuntimeError("no loadable segments in %s" % src)
+    image_base = min(s.virtual_address for s in segments)
+    image_end = max(s.virtual_address + s.virtual_size for s in segments)
     init_section = next((sec for sec in m.sections
                          if sec.name == "__mod_init_func"), None) \
         if include_init else None
@@ -242,6 +253,7 @@ def convert(src, dst, bridge="libroblox_jni_bridge.so",
         add_symbol("studio_entry", base + m.main_command.entrypoint, True, True)
         studio_jni_index = add_symbol(STUDIO_JNI_NAME, 0, True, True)
         main_index = add_symbol("main", 0, True, True)
+        singleton_index = add_symbol("singleton_storage", 0, True, True)
 
     strtab = StringTable()
     for sym in symbols:
@@ -263,6 +275,9 @@ def convert(src, dst, bridge="libroblox_jni_bridge.so",
             relocations.append((addr, index[sym_name], R_AARCH64_GLOB_DAT, 0))
         else:
             addend = read_pointer(src_fh, vaddr_to_offset(addr))
+            if tag_skip and is_tagged_rebase_value(addend, image_base,
+                                                    image_end):
+                continue
             relocations.append((addr, 0, R_AARCH64_RELATIVE, addend))
 
     covered_addresses = {item[0] for item in relocations}
@@ -282,6 +297,9 @@ def convert(src, dst, bridge="libroblox_jni_bridge.so",
         covered_addresses.add(rebase_address)
         pointer_value = read_pointer(src_fh,
                                      vaddr_to_offset(rebase_address))
+        if tag_skip and is_tagged_rebase_value(pointer_value, image_base,
+                                                image_end):
+            continue
         relocations.append((rebase_address, 0, R_AARCH64_RELATIVE,
                             pointer_value))
 
@@ -339,7 +357,8 @@ def convert(src, dst, bridge="libroblox_jni_bridge.so",
     n_sections = 10 if init_data else 9
     off_shdr_end = off_shdr + 64 * n_sections
 
-    tramp_off = align(off_shdr_end, PAGE)
+    off_singleton = off_shdr_end
+    tramp_off = align(off_singleton + 0x4000, PAGE)
     tramp_va = align(meta_va + (off_shdr_end - meta_off), PAGE)
     file_end = tramp_off + len(JNI_TRAMPOLINE)
     struct.pack_into("<Q", dynsym_data, jni_index * 24 + 8, tramp_va)
@@ -350,12 +369,15 @@ def convert(src, dst, bridge="libroblox_jni_bridge.so",
     studio_shim_offset = 0x2000
     studio_shim_va = 0
     main_index = -1
+    singleton_index = -1
     if studio_jni_index >= 0:
         image_base = min(x.virtual_address for x in segments)
         studio_address = image_base + m.main_command.entrypoint
         studio_shim_va = image_base + studio_shim_offset
         struct.pack_into("<Q", dynsym_data, main_index * 24 + 8,
                          studio_address)
+        struct.pack_into("<Q", dynsym_data, singleton_index * 24 + 8,
+                         va(off_singleton))
         struct.pack_into("<Q", dynsym_data, studio_jni_index * 24 + 8,
                          studio_shim_va)
         argv_address = va(off_argv)
@@ -429,7 +451,7 @@ def convert(src, dst, bridge="libroblox_jni_bridge.so",
         phdrs += pheader(PT_LOAD, flags, s.file_offset, s.virtual_address,
                          s.file_size, max(s.file_size, s.virtual_size), PAGE)
     phdrs += pheader(PT_LOAD, PF_R | PF_W, meta_off, meta_va,
-                     off_shdr_end - meta_off, off_shdr_end - meta_off, PAGE)
+                     tramp_off - meta_off, tramp_off - meta_off, PAGE)
     phdrs += pheader(PT_LOAD, PF_R | PF_X, tramp_off, tramp_va,
                      jni_area_size, jni_area_size, PAGE)
     phdrs += pheader(PT_DYNAMIC, PF_R, off_dynamic, va(off_dynamic),
@@ -504,7 +526,7 @@ def convert(src, dst, bridge="libroblox_jni_bridge.so",
         out.write(b"\0" * (off_shdr - (off_init_array + len(init_data))))
         for sec in sections:
             out.write(sec)
-        out.write(b"\0" * (tramp_off - off_shdr_end))
+        out.write(b"\0" * (tramp_off - off_singleton))
         out.write(JNI_TRAMPOLINE)
 
     src_fh.close()
@@ -528,9 +550,12 @@ def main():
     ap.add_argument("--bridge", default="libroblox_jni_bridge.so")
     ap.add_argument("--skip-init", action="store_true")
     ap.add_argument("--max-init", type=int, default=0)
+    ap.add_argument("--tag-skip", type=int, choices=(0, 1), default=1,
+                    help="1 = leave macOS tagged pointers unrelocated")
     args = ap.parse_args()
     result = convert(args.input, args.output, args.bridge,
-                     include_init=not args.skip_init, max_init=args.max_init)
+                     include_init=not args.skip_init, max_init=args.max_init,
+                     tag_skip=args.tag_skip)
     print("%s -> %s  seg=%d sym=%d imp=%d rel=%d  %d->%d bytes" % (
         os.path.basename(args.input), os.path.basename(args.output),
         result["segments"], result["symbols"], result["imports"],
