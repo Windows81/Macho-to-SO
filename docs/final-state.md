@@ -64,3 +64,25 @@ ARM64 x8 aggregate returns, tagged-pointer rebase skipping in the converter
 Studio's full GUI is not reachable with the current compatibility layer.
 Everything else is finished and published, and a working Qt window is
 available in the port APK.
+
+## Late finding (20:20 UTC): the fault is inside the initializer prologue
+
+Instrumented run with `proxyFix=3`, `tagSkip=1`, `stringFix=0`:
+
+```text
+fault insn 0x3c830140 at pc 0x79efa05158   ; stur q0, [x10, #48], x10 = 1
+RobloxPortProxy: intercept ... reg x10 old 0x1 addr 0x31 -> proxy
+fault insn 0xf940204b at pc 0x79efa0515c   ; ldr x11, [x2, #0x40], x2 = 0
+fault insn 0xf804014b at pc 0x79efa05160   ; str x11, [x10, #0x10]
+fault insn 0xa903fc5f at pc 0x79efa05164   ; stp x3, x4, [x2, #...]
+fault insn 0x3dc00060 at pc 0x79efa05174
+fault insn 0x3dc000a0 at pc 0x79efa051a4
+fault sig 11 addr 0 pc_va 0xffffff8812cf2000   ; bogus PC after proxy resumes
+```
+
+Every base register in the first ten instructions of the STM initialiser
+holds a small integer or zero. Replacing those registers with proxy pages
+lets execution continue for a few instructions and then jumps to a bogus PC.
+No stub returns a tagged value (`RobloxPortTag` logged nothing), so the
+values come from the converted static data and the rebasing model itself.
+This is a hard blocker in the artefact.
