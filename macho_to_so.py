@@ -241,6 +241,7 @@ def convert(src, dst, bridge="libroblox_jni_bridge.so",
         base = min(x.virtual_address for x in segments)
         add_symbol("studio_entry", base + m.main_command.entrypoint, True, True)
         studio_jni_index = add_symbol(STUDIO_JNI_NAME, 0, True, True)
+        main_index = add_symbol("main", 0, True, True)
 
     strtab = StringTable()
     for sym in symbols:
@@ -348,10 +349,13 @@ def convert(src, dst, bridge="libroblox_jni_bridge.so",
     studio_shim_data = bytearray(STUDIO_SHIM)
     studio_shim_offset = 0x2000
     studio_shim_va = 0
+    main_index = -1
     if studio_jni_index >= 0:
         image_base = min(x.virtual_address for x in segments)
         studio_address = image_base + m.main_command.entrypoint
         studio_shim_va = image_base + studio_shim_offset
+        struct.pack_into("<Q", dynsym_data, main_index * 24 + 8,
+                         studio_address)
         struct.pack_into("<Q", dynsym_data, studio_jni_index * 24 + 8,
                          studio_shim_va)
         argv_address = va(off_argv)
