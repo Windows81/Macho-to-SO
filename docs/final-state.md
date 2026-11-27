@@ -86,3 +86,21 @@ lets execution continue for a few instructions and then jumps to a bogus PC.
 No stub returns a tagged value (`RobloxPortTag` logged nothing), so the
 values come from the converted static data and the rebasing model itself.
 This is a hard blocker in the artefact.
+
+## Namespace experiment (2026-11-27)
+
+Renamed Studio's 287 `std::__1` imports to `std::__ndk1` with LIEF, plus
+`__mbstate_t` mangling fixes, reverting one Qtitan symbol whose provider is not
+libc++. All renamed imports resolve against `libc++_shared.so`. Added
+`libc++_shared.so` as NEEDED to both Studio images and removed the bridge's
+no-op `__cxa_*` stubs so Android's exception ABI is used.
+
+Verified: `register QtNative -> 0`, `qt initJNI retry -> 0`, `singleton state
+7`, `launching Studio`, then `fault sig 11 addr 0x51 pc_va 0x203a915f0`. The
+faulting call is `__cxa_throw`; the exception object pointer is the small value
+0x51. LIEF shifted the image by 0x1000, so the hand-written `main` wrapper was
+rewritten at its new offset with corrected constants.
+
+Verdict: the namespace and layout theory was correct — Qt initialises and
+Studio starts cleanly — but a small tagged/rebased value reaches exception
+handling. That is the remaining blocker.
