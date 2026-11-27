@@ -150,3 +150,11 @@ values. Bounded stack patching produced 495 intercepts with the same three
 PCs repeating; the values are regenerated each iteration. No Studio window or
 popup was observed. The remaining work is to fix the producer of these values
 in the converted image, not the fault handler.
+
+### Cleanup-slot patch loop (2026-11-27)
+
+An automated loop NOPed the faulting instruction in the Studio cleanup routine
+and rebuilt/reinstalled each time. The fault advanced from 0x31 to 0x38, then
+to 0x4c, then to 0x636e6174736e49 (ASCII "Instanc" used as a pointer), at
+which point the fault PC left the Studio image. No Studio window, Qt setup
+marker, or popup window appeared in any iteration.
