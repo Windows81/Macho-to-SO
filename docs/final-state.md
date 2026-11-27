@@ -197,3 +197,10 @@ Decoding the exact fault PC showed `__strlen_aarch64` in bionic libc doing
 `ldp x2,x3,[x0]` with x0 = the ASCII bytes of "Instance". A tagged-pointer
 guard on the exported `strlen` symbol logged zero calls because libc calls its
 internal implementation directly. No marker, Studio window or popup appeared.
+
+### Snprintf-boundary attempt (2026-11-27)
+
+A vararg filter on `snprintf` that converts tagged/inline-ASCII arguments to
+temporary strings logged zero calls; the fault persisted in bionic internal
+strlen with "Instance" as the pointer. This closes the exported-symbol route:
+free, strlen and snprintf filters all failed for the same reason.
