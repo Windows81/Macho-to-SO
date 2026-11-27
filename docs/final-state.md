@@ -166,3 +166,10 @@ names ("Instance", "Depende...") as pointers. The diagnostic was itself
 faulting while dumping those registers; after guarding the dump, proxyFix=2
 intercepted the values but the zeroed proxy page is not a valid Scudo chunk
 header. No marker, Studio window or popup was observed.
+
+### Free-stub filter (2026-11-27)
+
+A tagged-pointer guard on the bridge's exported `free` symbol logged zero
+calls; the fault still occurred in bionic Scudo with "Instance" as the pointer.
+The bad pointer is freed by bionic's own cleanup path, not through the JNI
+stub boundary. No Studio window, marker or popup was observed.
