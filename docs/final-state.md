@@ -121,3 +121,13 @@ RobloxPortProxy: repaired exception field 0x31 -> 0x7675192476
 The next faults at 0x31 and 0x8 are further small values in other paths. No
 window yet. The repair is parameterised as proxyFix=4 and is not a permanent
 fix.
+
+### C-runtime and proxy findings (2026-11-27)
+
+Routing `snprintf`, `strlen`, `atoi`, `pthread_self` and other ordinary C
+functions to bionic removed the `0x51` exception fault entirely; those calls
+were returning zero through Java. After that, the remaining faults are a
+chain of small tagged values (`0x31`) followed by tagged pointers in x0 and
+then null dereferences. Redirecting a bad pointer to a zeroed proxy page
+advances a few instructions but the next load returns zero, so execution
+faults again on null. A typed proxy factory is needed; no window yet.
