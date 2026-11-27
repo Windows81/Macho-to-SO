@@ -190,3 +190,10 @@ A SIGSEGV mode that substituted a real bionic allocation for the ASCII
 type-name pointer logged two intercepts and then died, with no marker, Studio
 window or popup. This rules out a simple allocator-header problem and
 confirms the inlined ABI mismatch as the fundamental blocker.
+
+### strlen-boundary attempt (2026-11-27)
+
+Decoding the exact fault PC showed `__strlen_aarch64` in bionic libc doing
+`ldp x2,x3,[x0]` with x0 = the ASCII bytes of "Instance". A tagged-pointer
+guard on the exported `strlen` symbol logged zero calls because libc calls its
+internal implementation directly. No marker, Studio window or popup appeared.
