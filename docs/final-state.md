@@ -204,3 +204,10 @@ A vararg filter on `snprintf` that converts tagged/inline-ASCII arguments to
 temporary strings logged zero calls; the fault persisted in bionic internal
 strlen with "Instance" as the pointer. This closes the exported-symbol route:
 free, strlen and snprintf filters all failed for the same reason.
+
+### Vendored C runtime attempt (2026-11-27)
+
+Studio's `strlen` and `free` imports were renamed to `vlibc_strlen` and
+`vlibc_free`, with matching exports in the bridge. The app launched normally
+but the filter logged zero calls; the fault remained in bionic internal strlen
+with ASCII "Instance". No marker, Studio window or popup appeared.
