@@ -158,3 +158,11 @@ and rebuilt/reinstalled each time. The fault advanced from 0x31 to 0x38, then
 to 0x4c, then to 0x636e6174736e49 (ASCII "Instanc" used as a pointer), at
 which point the fault PC left the Studio image. No Studio window, Qt setup
 marker, or popup window appeared in any iteration.
+
+### String-as-pointer faults in bionic (2026-11-27)
+
+The fault PC was inside bionic libc's Scudo allocator, called with ASCII type
+names ("Instance", "Depende...") as pointers. The diagnostic was itself
+faulting while dumping those registers; after guarding the dump, proxyFix=2
+intercepted the values but the zeroed proxy page is not a valid Scudo chunk
+header. No marker, Studio window or popup was observed.
