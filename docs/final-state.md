@@ -183,3 +183,10 @@ inlined string field accesses inside Studio, which were compiled against Apple's
 layout and read Android-layout objects. This is a link-level unfixable ABI
 mismatch; the only complete remedy is rebuilding Studio against the Android
 libc++ ABI.
+
+### Heap-proxy attempt (2026-11-27)
+
+A SIGSEGV mode that substituted a real bionic allocation for the ASCII
+type-name pointer logged two intercepts and then died, with no marker, Studio
+window or popup. This rules out a simple allocator-header problem and
+confirms the inlined ABI mismatch as the fundamental blocker.
