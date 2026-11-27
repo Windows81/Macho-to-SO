@@ -173,3 +173,13 @@ A tagged-pointer guard on the bridge's exported `free` symbol logged zero
 calls; the fault still occurred in bionic Scudo with "Instance" as the pointer.
 The bad pointer is freed by bionic's own cleanup path, not through the JNI
 stub boundary. No Studio window, marker or popup was observed.
+
+### ABI limit confirmed (2026-11-27)
+
+Verification: 286/286 renamed Studio imports resolve to Android's libc++;
+the bridge's 291 `std::__1` stubs are no longer used. The persistent
+ASCII-as-pointer faults ("Instance", "Depende...") therefore originate in
+inlined string field accesses inside Studio, which were compiled against Apple's
+layout and read Android-layout objects. This is a link-level unfixable ABI
+mismatch; the only complete remedy is rebuilding Studio against the Android
+libc++ ABI.
