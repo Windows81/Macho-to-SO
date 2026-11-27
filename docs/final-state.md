@@ -104,3 +104,20 @@ rewritten at its new offset with corrected constants.
 Verdict: the namespace and layout theory was correct — Qt initialises and
 Studio starts cleanly — but a small tagged/rebased value reaches exception
 handling. That is the remaining blocker.
+
+### Exception-field repair (2026-11-27)
+
+With the namespace rename and real libc++ exception ABI active, the thrown
+object's first field held 0x51 while its other fields were valid pointers.
+Replacing that field (and any matching register) with the typeinfo passed as
+the second argument let execution continue:
+
+```
+RobloxPortProxy: repaired exception field 0x51 -> 0x7675192476
+RobloxPortDiag: fault sig 11 addr 0x31 pc_va 0x203a915f0
+RobloxPortProxy: repaired exception field 0x31 -> 0x7675192476
+```
+
+The next faults at 0x31 and 0x8 are further small values in other paths. No
+window yet. The repair is parameterised as proxyFix=4 and is not a permanent
+fix.
