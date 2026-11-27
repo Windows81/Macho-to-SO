@@ -140,3 +140,13 @@ map hit the 512-intercept cap with three repeating PCs. The process still died
 with no Studio window and no popup window. The tagged values live in a
 container Studio iterates, so the next real step is fixing that container's
 producer rather than expanding the fault handler.
+
+### Producer-side attempt (2026-11-27)
+
+Disassembly of the repeating PCs showed a large cleanup routine loading local
+objects from stack slots (`sp+0x1c0` onward) and calling virtual destructors
+through `ldr x8,[x0]; ldr x8,[x8,#8]; blr x8`. The slots held small tagged
+values. Bounded stack patching produced 495 intercepts with the same three
+PCs repeating; the values are regenerated each iteration. No Studio window or
+popup was observed. The remaining work is to fix the producer of these values
+in the converted image, not the fault handler.
