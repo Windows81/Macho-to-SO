@@ -131,3 +131,12 @@ chain of small tagged values (`0x31`) followed by tagged pointers in x0 and
 then null dereferences. Redirecting a bad pointer to a zeroed proxy page
 advances a few instructions but the next load returns zero, so execution
 faults again on null. A typed proxy factory is needed; no window yet.
+
+### Typed proxy factory (2026-11-27)
+
+A vtable-bearing proxy object was supplied per fault (fresh and stable-map
+variants). Fresh proxies produced 60+ intercepts in milliseconds; the stable
+map hit the 512-intercept cap with three repeating PCs. The process still died
+with no Studio window and no popup window. The tagged values live in a
+container Studio iterates, so the next real step is fixing that container's
+producer rather than expanding the fault handler.
